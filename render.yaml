@@ -4,8 +4,8 @@ services:
     runtime: go
     plan: free
     region: frankfurt
-    buildCommand: go build -o bot .
-    startCommand: ./bot
+    buildCommand: go build -o bot . && cp bot app
+    startCommand: ./app
     envVars:
       - key: PORT
         value: 8080
