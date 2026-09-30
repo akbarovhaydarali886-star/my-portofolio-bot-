@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: my-portfolio-bot
+    runtime: go
+    plan: free
+    region: frankfurt
+    buildCommand: go build -o bot main.go
+    startCommand: ./bot
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        sync: false
