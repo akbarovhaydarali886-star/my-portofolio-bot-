@@ -44,7 +44,7 @@ func main() {
 	// Graceful shutdown listener
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	sig := <-stop
 
-	log.Println("Shutting down portfolio bot & backend gracefully...")
+	log.Printf("Received signal: %v. Shutting down gracefully...", sig)
 }

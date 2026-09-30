@@ -8,7 +8,7 @@ RUN go mod download || true
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o bot main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bot main.go
 
 # Production runner image (under 20MB)
 FROM alpine:latest
@@ -16,10 +16,13 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates tzdata
 ENV TZ=Asia/Tashkent
 
-WORKDIR /root/
+WORKDIR /app
 
-COPY --from=builder /app/bot .
+COPY --from=builder /app/bot /app/bot
+RUN chmod +x /app/bot
+
+ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["./bot"]
+ENTRYPOINT ["/app/bot"]

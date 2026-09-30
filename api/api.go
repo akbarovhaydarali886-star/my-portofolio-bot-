@@ -39,11 +39,20 @@ type StandardResponse struct {
 func (s *Server) SetupRoutes() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("POST /api/order", s.handleCreateOrder)
+	mux.HandleFunc("/", s.handleRoot)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/order", s.handleCreateOrder)
 
 	return withCORS(mux)
+}
+
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" && r.URL.Path != "/health" {
+		http.NotFound(w, r)
+		return
+	}
+	s.handleHealth(w, r)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +136,11 @@ func withCORS(next http.Handler) http.Handler {
 }
 
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%s", s.cfg.Port)
-	log.Printf("🌐 Go Backend API listening on http://localhost%s", addr)
+	port := s.cfg.Port
+	if port == "" {
+		port = "8080"
+	}
+	addr := fmt.Sprintf("0.0.0.0:%s", port)
+	log.Printf("🌐 Go Backend API listening on %s (Health check: http://%s/)", addr, addr)
 	return http.ListenAndServe(addr, s.SetupRoutes())
 }
