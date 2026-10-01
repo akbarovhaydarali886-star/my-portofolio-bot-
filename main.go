@@ -109,9 +109,10 @@ func main() {
 
 	// Set bot commands menu
 	commands := tgbotapi.NewSetMyCommands(
-		tgbotapi.BotCommand{Command: "start", Description: "Start bot / Tilni tanlash / Выбрать язык"},
+		tgbotapi.BotCommand{Command: "start", Description: "Start bot / Boshlash"},
 		tgbotapi.BotCommand{Command: "lang", Description: "Tilni o'zgartirish / Change language / Сменить язык"},
 		tgbotapi.BotCommand{Command: "order", Description: "Loyiha buyurtma berish / Order project / Заказать проект"},
+		tgbotapi.BotCommand{Command: "channel", Description: "Kanal holatini tekshirish / Check channel status"},
 		tgbotapi.BotCommand{Command: "portfolio", Description: "Portfolio / Портфолио"},
 		tgbotapi.BotCommand{Command: "help", Description: "Yordam / Help / Помощь"},
 		tgbotapi.BotCommand{Command: "cancel", Description: "Bekor qilish / Cancel / Отмена"},
@@ -178,6 +179,19 @@ func main() {
 				log.Fatalf("HTTP server xatosi: %v", err)
 			}
 		}()
+
+		// Keep-alive background ping so Render NEVER goes to sleep!
+		go func() {
+			time.Sleep(15 * time.Second)
+			ticker := time.NewTicker(4 * time.Minute)
+			for range ticker.C {
+				resp, err := http.Get(strings.TrimRight(webhookURL, "/") + "/health")
+				if err == nil {
+					_ = resp.Body.Close()
+					log.Println("💓 Keep-alive ping yuborildi (Render uxlab qolmaydi)")
+				}
+			}
+		}()
 	} else {
 		log.Println("⚡️ RENDER_EXTERNAL_URL topilmadi. Lokal Long-Polling rejimida ishlamoqda...")
 		_, _ = bot.Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false})
@@ -230,9 +244,18 @@ func detectChannel(bot *tgbotapi.BotAPI, chat *tgbotapi.Chat) {
 		return
 	}
 	chID := fmt.Sprintf("%d", chat.ID)
-	log.Printf("📢 [KANAL ANIQLANDI] Nomi: '%s', Username: '%s', ID: %s", chat.Title, chat.UserName, chID)
+
+	cfgMu.RLock()
+	alreadyLinked := (channelID == chID)
+	cfgMu.RUnlock()
+
+	// If already linked, do not send confirmation again to avoid spamming the channel!
+	if alreadyLinked {
+		return
+	}
 
 	setChannelID(chID)
+	log.Printf("📢 [KANAL ANIQLANDI] Nomi: '%s', Username: '%s', ID: %s", chat.Title, chat.UserName, chID)
 
 	confirmText := fmt.Sprintf(
 		"✅ <b>Haydarali Akbarov Portfolio Boti ulandi!</b> 🚀\n\n"+
@@ -270,7 +293,9 @@ func detectChannel(bot *tgbotapi.BotAPI, chat *tgbotapi.Chat) {
 }
 
 func showLanguageSelection(bot *tgbotapi.BotAPI, chatID int64) {
-	text := "🌐 <b>Iltimos, tilni tanlang:</b>\n" +
+	text := "👋 <b>Assalomu alaykum! / Hello! / Здравствуйте!</b> 🚀\n\n" +
+		"Men <b>Haydarali Akbarov</b>ning rasmiy portfolio botiman.\n\n" +
+		"🌐 <b>Iltimos, muloqot tilini tanlang:</b>\n" +
 		"Please choose your language:\n" +
 		"Пожалуйста, выберите язык:"
 
@@ -291,7 +316,21 @@ func showLanguageSelection(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	if msg == nil || msg.Chat == nil {
+		return
+	}
+
 	chatID := msg.Chat.ID
+
+	// 1. IMPORTANT: If message is NOT private (it's in a channel, supergroup, or group):
+	if !msg.Chat.IsPrivate() {
+		// Only check if it's a channel/group to auto-link it, DO NOT run user dialogue!
+		if msg.Chat.IsChannel() || msg.Chat.IsSuperGroup() || msg.Chat.IsGroup() {
+			detectChannel(bot, msg.Chat)
+		}
+		return
+	}
+
 	userID := msg.From.ID
 	username := msg.From.UserName
 	text := strings.TrimSpace(msg.Text)
@@ -454,7 +493,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		showTechOptions(bot, chatID, state.Language)
 
 	case StepWaitingTech:
-		// Check text replies
 		r, n, v := getTechLabels(state.Language)
 		switch {
 		case text == r || strings.EqualFold(text, "react") || strings.EqualFold(text, "react.js"):
@@ -846,30 +884,15 @@ func startFlow(bot *tgbotapi.BotAPI, chatID int64, userID int64, username, first
 	switch l {
 	case LangEN:
 		msgText = fmt.Sprintf(
-			"👋 <b>Hello, %s!</b>\n\n"+
-				"I am the official portfolio bot for <b>Haydarali Akbarov</b>. 🚀\n\n"+
-				"Here you can provide project details and place your order.\n\n"+
-				"Let's get started!\n\n"+
-				"1️⃣ <b>Please enter your full name (or company name):</b>",
-			html.EscapeString(firstName),
+			"1️⃣ <b>Please enter your full name (or company name):</b>",
 		)
 	case LangRU:
 		msgText = fmt.Sprintf(
-			"👋 <b>Здравствуйте, %s!</b>\n\n"+
-				"Я официальный портфолио-бот <b>Хайдарали Акбарова</b>. 🚀\n\n"+
-				"Здесь вы можете предоставить данные о вашем проекте и оформить заказ.\n\n"+
-				"Давайте начнем!\n\n"+
-				"1️⃣ <b>Пожалуйста, введите ваше имя и фамилию (или название компании):</b>",
-			html.EscapeString(firstName),
+			"1️⃣ <b>Пожалуйста, введите ваше имя и фамилию (или название компании):</b>",
 		)
 	default:
 		msgText = fmt.Sprintf(
-			"👋 <b>Assalomu alaykum, %s!</b>\n\n"+
-				"Men <b>Haydarali Akbarov</b>ning rasmiy portfolio botiman. 🚀\n\n"+
-				"Bu yerda siz loyihangiz bo'yicha to'liq ma'lumot berishingiz va buyurtma qoldirishingiz mumkin.\n\n"+
-				"Keling, boshlaymiz!\n\n"+
-				"1️⃣ <b>Iltimos, ismingiz va familiyangizni (yoki kompaniyangiz nomini) kiriting:</b>",
-			html.EscapeString(firstName),
+			"1️⃣ <b>Iltimos, ismingiz va familiyangizni (yoki kompaniyangiz nomini) kiriting:</b>",
 		)
 	}
 
@@ -912,6 +935,7 @@ func sendHelp(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
 			"/start — Start bot and choose language\n" +
 			"/lang — Change language\n" +
 			"/order — Submit a new project request\n" +
+			"/channel — Check channel link status\n" +
 			"/portfolio — View portfolio and skills\n" +
 			"/cancel — Cancel current process\n\n" +
 			"📞 <b>Contact Developer:</b>\n" +
@@ -923,6 +947,7 @@ func sendHelp(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
 			"/start — Запустить бота и выбрать язык\n" +
 			"/lang — Сменить язык\n" +
 			"/order — Оформить заказ на проект\n" +
+			"/channel — Проверить статус привязки канала\n" +
 			"/portfolio — Посмотреть портфолио разработчика\n" +
 			"/cancel — Отменить текущее действие\n\n" +
 			"📞 <b>Контакты разработчика:</b>\n" +
@@ -934,6 +959,7 @@ func sendHelp(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
 			"/start — Botni ishga tushirish va tilni tanlash\n" +
 			"/lang — Tilni o'zgartirish\n" +
 			"/order — Yangi loyiha buyurtma berish\n" +
+			"/channel — Kanal ulanish holatini tekshirish\n" +
 			"/portfolio — Dasturchi portfoliosi\n" +
 			"/cancel — Jarayonni bekor qilish\n\n" +
 			"📞 <b>Aloqa:</b>\n" +
