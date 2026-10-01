@@ -236,12 +236,37 @@ func detectChannel(bot *tgbotapi.BotAPI, chat *tgbotapi.Chat) {
 
 	confirmText := fmt.Sprintf(
 		"✅ <b>Haydarali Akbarov Portfolio Boti ulandi!</b> 🚀\n\n"+
-			"Ushbu kanal (<b>%s</b>) yangi loyiha takliflari va buyurtmalarni qabul qilish uchun muvaffaqiyatli sozlandi.",
+			"📢 <b>Kanal:</b> %s\n"+
+			"🆔 <b>Kanal ID:</b> <code>%s</code>\n\n"+
+			"Ushbu kanal yangi loyiha takliflari va buyurtmalarni qabul qilish uchun muvaffaqiyatli sozlandi.",
 		html.EscapeString(chat.Title),
+		chID,
 	)
 	msg := tgbotapi.NewMessage(chat.ID, confirmText)
 	msg.ParseMode = tgbotapi.ModeHTML
 	_, _ = bot.Send(msg)
+
+	cfgMu.RLock()
+	adminID := adminChatID
+	cfgMu.RUnlock()
+
+	if adminID != 0 && adminID != chat.ID {
+		adminNotice := fmt.Sprintf(
+			"📢 <b>Taklif kanali ulandi!</b> 🚀\n\n"+
+				"Nomi: <b>%s</b>\n"+
+				"Kanal ID: <code>%s</code>\n\n"+
+				"💡 <b>Doimiy saqlash:</b>\n"+
+				"Render.com da <b>Environment</b> bo'limiga kirib:\n"+
+				"<code>TELEGRAM_CHANNEL_ID</code> = <code>%s</code>\n"+
+				"deb qo'shib qo'ysangiz, server qayta yonganda ham kanal uzilmaydi!",
+			html.EscapeString(chat.Title),
+			chID,
+			chID,
+		)
+		adminMsg := tgbotapi.NewMessage(adminID, adminNotice)
+		adminMsg.ParseMode = tgbotapi.ModeHTML
+		_, _ = bot.Send(adminMsg)
+	}
 }
 
 func showLanguageSelection(bot *tgbotapi.BotAPI, chatID int64) {
@@ -272,17 +297,19 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 
 	// Auto-detect channel if message is forwarded from a channel
-	if msg.ForwardFromChat != nil && msg.ForwardFromChat.IsChannel() {
+	if msg.ForwardFromChat != nil {
 		chID := fmt.Sprintf("%d", msg.ForwardFromChat.ID)
 		setChannelID(chID)
 		log.Printf("📢 [FORWARD ORQALI KANAL ULANDI] Nomi: %s, ID: %s", msg.ForwardFromChat.Title, chID)
 
 		resp := fmt.Sprintf(
-			"✅ <b>Taklif kanali muvaffaqiyatli ulandi!</b>\n\n"+
+			"✅ <b>Taklif kanali muvaffaqiyatli ulandi!</b> 🚀\n\n"+
 				"📢 <b>Kanal:</b> %s\n"+
-				"🆔 <b>ID:</b> <code>%s</code>\n\n"+
-				"Endi barcha buyurtmalar avtomatik shu kanalga tashlanadi!",
+				"🆔 <b>Kanal ID:</b> <code>%s</code>\n\n"+
+				"Endi barcha buyurtmalar avtomatik shu kanalga tashlanadi!\n\n"+
+				"💡 <b>Eslatma:</b> Render.com da <b>Environment</b> bo'limiga kirib <code>TELEGRAM_CHANNEL_ID</code> = <code>%s</code> deb qo'shib qo'ysangiz, server qayta yuklanganda ham kanal doimiy saqlanadi.",
 			html.EscapeString(msg.ForwardFromChat.Title),
+			chID,
 			chID,
 		)
 		reply := tgbotapi.NewMessage(chatID, resp)
@@ -306,6 +333,26 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		return
 	case "/lang", "/language":
 		showLanguageSelection(bot, chatID)
+		return
+	case "/channel", "/kanal":
+		cfgMu.RLock()
+		curCh := channelID
+		cfgMu.RUnlock()
+		if curCh != "" {
+			resp := fmt.Sprintf("✅ <b>Hozirda ulangan kanal ID:</b> <code>%s</code>\n\nBarcha yangi buyurtmalar ushbu kanalga yuborilmoqda.", curCh)
+			reply := tgbotapi.NewMessage(chatID, resp)
+			reply.ParseMode = tgbotapi.ModeHTML
+			_, _ = bot.Send(reply)
+		} else {
+			resp := "⚠️ <b>Hozircha hech qanday kanal ulanmagan!</b>\n\n" +
+				"Kanalni ulash uchun quyidagilardan birini qiling:\n" +
+				"1. Botingizni kanalingizga <b>Admin</b> qiling va <b>'Post Messages'</b> ruxsatini bering.\n" +
+				"2. Kanalingizga kirib bitta so'z yozing (masalan: <code>salom</code>) yoki kanaldan istalgan xabarni shu botga <b>Forward</b> qiling!\n\n" +
+				"Yoki to'g'ridan-to'g'ri: <code>/setchannel -100xxxxxxxx</code> deb yozing."
+			reply := tgbotapi.NewMessage(chatID, resp)
+			reply.ParseMode = tgbotapi.ModeHTML
+			_, _ = bot.Send(reply)
+		}
 		return
 	case "/order":
 		startOrder(bot, chatID, userID, username, state.Language)
@@ -691,13 +738,13 @@ func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserSt
 	_, _ = bot.Send(reply)
 
 	// 2. ROUTING: KANALGA VA SIZGA (MEN) YUBORISH
-	sendOrderRouting(bot, state, userID, nowStr, "Telegram Bot")
+	sendOrderRouting(bot, state, userID, chatID, nowStr, "Telegram Bot")
 
 	// 3. Clear session
 	clearState(userID)
 }
 
-func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, timestamp, source string) {
+func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chatID int64, timestamp, source string) {
 	tgUserLink := "Mavjud emas"
 	if state.Telegram != "" {
 		tgUserLink = fmt.Sprintf("@%s (ID: <code>%d</code>)", state.Telegram, userID)
@@ -736,17 +783,15 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, time
 
 	// 1. Send to Channel (bot -> kanal)
 	if curChan != "" {
+		var err error
 		if strings.HasPrefix(curChan, "-") {
-			idNum, err := strconv.ParseInt(curChan, 10, 64)
-			if err == nil {
+			idNum, parseErr := strconv.ParseInt(curChan, 10, 64)
+			if parseErr == nil {
 				msg := tgbotapi.NewMessage(idNum, orderText)
 				msg.ParseMode = tgbotapi.ModeHTML
 				_, err = bot.Send(msg)
-				if err != nil {
-					log.Printf("❌ Kanalga yuborishda xatolik (%s): %v", curChan, err)
-				} else {
-					log.Printf("✅ Buyurtma kanalga yuborildi: %s", curChan)
-				}
+			} else {
+				err = parseErr
 			}
 		} else {
 			chanName := curChan
@@ -755,15 +800,28 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, time
 			}
 			msg := tgbotapi.NewMessageToChannel(chanName, orderText)
 			msg.ParseMode = tgbotapi.ModeHTML
-			_, err := bot.Send(msg)
-			if err != nil {
-				log.Printf("❌ Kanalga yuborishda xatolik (%s): %v", chanName, err)
-			} else {
-				log.Printf("✅ Buyurtma kanalga yuborildi: %s", chanName)
+			_, err = bot.Send(msg)
+		}
+
+		if err != nil {
+			log.Printf("❌ Kanalga yuborishda xatolik (%s): %v", curChan, err)
+			if chatID != 0 {
+				warn := tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ <b>Kanalga yuborishda xatolik:</b> %v\n\nIltimos, bot kanalingizda <b>Admin</b> qilinganiga va <b>'Post Messages'</b> huquqi borligiga ishonch hosil qiling!", err))
+				warn.ParseMode = tgbotapi.ModeHTML
+				_, _ = bot.Send(warn)
 			}
+		} else {
+			log.Printf("✅ Buyurtma kanalga yuborildi: %s", curChan)
 		}
 	} else {
 		log.Println("⚠️ Kanal ID hali ulanmagan. Kanaldan xabar forward qiling.")
+		if chatID != 0 {
+			warnMsg := "⚠️ <b>Eslatma:</b> Buyurtmangiz qabul qilindi, lekin Telegram kanali hali ulanmagan!\n\n" +
+				"Kanalni ulash uchun: Kanalingizga kirib bitta so'z yozing (masalan <code>salom</code>) yoki o'sha kanaldan bitta xabarni shu botga <b>Forward</b> qiling!"
+			warn := tgbotapi.NewMessage(chatID, warnMsg)
+			warn.ParseMode = tgbotapi.ModeHTML
+			_, _ = bot.Send(warn)
+		}
 	}
 
 	// 2. Send to Admin personally (kanal -> men)
@@ -983,7 +1041,7 @@ func handleWebOrder(bot *tgbotapi.BotAPI, w http.ResponseWriter, r *http.Request
 	}
 
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
-	sendOrderRouting(bot, state, 0, nowStr, "Portfolio Web-sayti")
+	sendOrderRouting(bot, state, 0, 0, nowStr, "Portfolio Web-sayti")
 
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "Qabul qilindi"})
