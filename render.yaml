@@ -4,7 +4,7 @@ services:
     runtime: go
     plan: free
     region: frankfurt
-    buildCommand: go build -o app .
+    buildCommand: go build -o app . && cp app bot
     startCommand: ./app
     envVars:
       - key: PORT
