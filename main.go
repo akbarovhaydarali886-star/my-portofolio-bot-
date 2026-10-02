@@ -1121,7 +1121,7 @@ func loadConfig() {
 	loadDotEnv(".env")
 	loadDotEnv("../.env")
 
-	botToken = getEnv("TELEGRAM_BOT_TOKEN", "8851269459:AAEpHeyEg2hgg0_TqfjYYbuyb0pGTPRJAG8")
+	botToken = getEnv("TELEGRAM_BOT_TOKEN", "")
 	channelID = getEnv("TELEGRAM_CHANNEL_ID", "")
 	adminChatID, _ = strconv.ParseInt(getEnv("TELEGRAM_ADMIN_CHAT_ID", "0"), 10, 64)
 	port = getEnv("PORT", "8080")
