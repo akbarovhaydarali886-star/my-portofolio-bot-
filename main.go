@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,9 +29,16 @@ const (
 const (
 	StepChooseLang = iota
 	StepWaitingName
-	StepWaitingContact
-	StepWaitingProject
+	StepWaitingService
 	StepWaitingTech
+	StepWaitingProject
+)
+
+// Service Types
+const (
+	ServiceFrontend  = "🌐 Web site frontend"
+	ServiceFullstack = "💻 Web site Full stack"
+	ServiceTelegram  = "🤖 Telegram bot"
 )
 
 // UserState stores client state in RAM
@@ -38,10 +46,11 @@ type UserState struct {
 	Language    Lang
 	Step        int
 	Name        string
+	ServiceType string
+	Technology  string
 	Phone       string
 	Telegram    string
 	ProjectInfo string
-	Technology  string
 	UserID      int64
 	UpdatedAt   time.Time
 }
@@ -61,23 +70,6 @@ var (
 	cfgMu         sync.RWMutex
 )
 
-func getTechLabels(l Lang) (react, next, vue string) {
-	switch l {
-	case LangEN:
-		return "⚛️ React.js (For complex projects)",
-			"▲ Next.js (For easy / fast projects)",
-			"🟢 Vue.js (For easy / lightweight projects)"
-	case LangRU:
-		return "⚛️ React.js (Для сложных задач)",
-			"▲ Next.js (Для простых задач)",
-			"🟢 Vue.js (Для простых задач)"
-	default:
-		return "⚛️ React.js (Qiyin ishlar uchun)",
-			"▲ Next.js (Oson ishlar uchun)",
-			"🟢 Vue.js (Oson ishlar uchun)"
-	}
-}
-
 func getLangName(l Lang) string {
 	switch l {
 	case LangEN:
@@ -91,7 +83,7 @@ func getLangName(l Lang) string {
 
 func main() {
 	log.Println("====================================================")
-	log.Println("⚡️ Haydarali Akbarov — Telegram Bot & Backend (Go)")
+	log.Println("⚡️ Haydarali Akbarov — Full Stack & Telegram Bot (Go)")
 	log.Println("====================================================")
 
 	loadConfig()
@@ -135,7 +127,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":      "ok",
 				"bot":         "@" + bot.Self.UserName,
-				"service":     "portfolio-bot-multilingual",
+				"service":     "portfolio-fullstack-telegram-bot",
 				"languages":   []string{"uz", "en", "ru"},
 				"time":        time.Now().Format(time.RFC3339),
 				"channel_set": channelID != "",
@@ -249,7 +241,6 @@ func detectChannel(bot *tgbotapi.BotAPI, chat *tgbotapi.Chat) {
 	alreadyLinked := (channelID == chID)
 	cfgMu.RUnlock()
 
-	// If already linked, do not send confirmation again to avoid spamming the channel!
 	if alreadyLinked {
 		return
 	}
@@ -322,9 +313,8 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	chatID := msg.Chat.ID
 
-	// 1. IMPORTANT: If message is NOT private (it's in a channel, supergroup, or group):
+	// 1. IMPORTANT: If message is NOT private, do NOT run dialogue!
 	if !msg.Chat.IsPrivate() {
-		// Only check if it's a channel/group to auto-link it, DO NOT run user dialogue!
 		if msg.Chat.IsChannel() || msg.Chat.IsSuperGroup() || msg.Chat.IsGroup() {
 			detectChannel(bot, msg.Chat)
 		}
@@ -335,7 +325,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	username := msg.From.UserName
 	text := strings.TrimSpace(msg.Text)
 
-	// Auto-detect channel if message is forwarded from a channel
+	// Auto-detect channel if forwarded
 	if msg.ForwardFromChat != nil {
 		chID := fmt.Sprintf("%d", msg.ForwardFromChat.ID)
 		setChannelID(chID)
@@ -345,10 +335,8 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			"✅ <b>Taklif kanali muvaffaqiyatli ulandi!</b> 🚀\n\n"+
 				"📢 <b>Kanal:</b> %s\n"+
 				"🆔 <b>Kanal ID:</b> <code>%s</code>\n\n"+
-				"Endi barcha buyurtmalar avtomatik shu kanalga tashlanadi!\n\n"+
-				"💡 <b>Eslatma:</b> Render.com da <b>Environment</b> bo'limiga kirib <code>TELEGRAM_CHANNEL_ID</code> = <code>%s</code> deb qo'shib qo'ysangiz, server qayta yuklanganda ham kanal doimiy saqlanadi.",
+				"Endi barcha buyurtmalar avtomatik shu kanalga tashlanadi!",
 			html.EscapeString(msg.ForwardFromChat.Title),
-			chID,
 			chID,
 		)
 		reply := tgbotapi.NewMessage(chatID, resp)
@@ -357,7 +345,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		return
 	}
 
-	// Auto-detect Admin (Haydarali)
+	// Auto-detect Admin
 	if strings.EqualFold(username, strings.TrimPrefix(developerTG, "@")) || adminChatID == 0 {
 		setAdminChatID(chatID)
 	}
@@ -384,17 +372,15 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			_, _ = bot.Send(reply)
 		} else {
 			resp := "⚠️ <b>Hozircha hech qanday kanal ulanmagan!</b>\n\n" +
-				"Kanalni ulash uchun quyidagilardan birini qiling:\n" +
-				"1. Botingizni kanalingizga <b>Admin</b> qiling va <b>'Post Messages'</b> ruxsatini bering.\n" +
-				"2. Kanalingizga kirib bitta so'z yozing (masalan: <code>salom</code>) yoki kanaldan istalgan xabarni shu botga <b>Forward</b> qiling!\n\n" +
-				"Yoki to'g'ridan-to'g'ri: <code>/setchannel -100xxxxxxxx</code> deb yozing."
+				"Kanalni ulash uchun bitta xabarni kanaldan botga <b>Forward</b> qiling yoki:\n" +
+				"<code>/setchannel -100xxxxxxxx</code> deb yozing."
 			reply := tgbotapi.NewMessage(chatID, resp)
 			reply.ParseMode = tgbotapi.ModeHTML
 			_, _ = bot.Send(reply)
 		}
 		return
 	case "/order":
-		startOrder(bot, chatID, userID, username, state.Language)
+		startFlow(bot, chatID, userID, username, msg.From.FirstName, state.Language)
 		return
 	case "/cancel", "❌ Bekor qilish", "❌ Cancel", "❌ Отмена":
 		clearState(userID)
@@ -435,122 +421,304 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	case StepWaitingName:
 		if text == "" {
-			promptMsg := "Iltimos, ismingiz va familiyangizni matn ko'rinishida yozing:"
+			promptMsg := "Iltimos, ismingiz va familiyangizni (yoki kompaniyangiz nomini) kiriting:"
 			if state.Language == LangEN {
-				promptMsg = "Please enter your full name as text:"
+				promptMsg = "Please enter your name or company name:"
 			} else if state.Language == LangRU {
-				promptMsg = "Пожалуйста, введите ваше имя и фамилию текстом:"
+				promptMsg = "Пожалуйста, введите ваше имя или название компании:"
 			}
 			reply := tgbotapi.NewMessage(chatID, promptMsg)
 			_, _ = bot.Send(reply)
 			return
 		}
 		state.Name = text
-		state.Step = StepWaitingContact
+		state.Step = StepWaitingService
+		showServiceOptions(bot, chatID, state.Language)
 
-		askPhone(bot, chatID, state)
+	case StepWaitingService:
+		// User might click reply button or type text
+		clean := strings.ToLower(text)
+		if strings.Contains(clean, "frontend") {
+			state.ServiceType = ServiceFrontend
+			state.Step = StepWaitingTech
+			showFrontendTechOptions(bot, chatID, state.Language)
+		} else if strings.Contains(clean, "full stack") || strings.Contains(clean, "fullstack") {
+			state.ServiceType = ServiceFullstack
+			state.Step = StepWaitingTech
+			showFullstackTechOptions(bot, chatID, state.Language)
+		} else if strings.Contains(clean, "bot") || strings.Contains(clean, "telegram") {
+			state.ServiceType = ServiceTelegram
+			state.Step = StepWaitingTech
+			showTelegramTechOptions(bot, chatID, state.Language)
+		} else {
+			showServiceOptions(bot, chatID, state.Language)
+		}
 
-	case StepWaitingContact:
+	case StepWaitingTech:
+		// Check text matching tech options
+		tech := matchTechInput(text, state.ServiceType)
+		if tech != "" {
+			state.Technology = tech
+			state.Step = StepWaitingProject
+			askProjectDetails(bot, chatID, state.Language)
+		} else {
+			// Reshow options for the current service
+			switch state.ServiceType {
+			case ServiceFullstack:
+				showFullstackTechOptions(bot, chatID, state.Language)
+			case ServiceTelegram:
+				showTelegramTechOptions(bot, chatID, state.Language)
+			default:
+				showFrontendTechOptions(bot, chatID, state.Language)
+			}
+		}
+
+	case StepWaitingProject:
 		phone := ""
 		if msg.Contact != nil {
 			phone = msg.Contact.PhoneNumber
-		} else if text != "" {
-			phone = text
 		}
 
-		if phone == "" {
-			errMsg := "Iltimos, telefon raqamingizni kiriting yoki 'Telefon raqamni ulashish' tugmasini bosing:"
-			if state.Language == LangEN {
-				errMsg = "Please enter your phone number or tap 'Share Phone Number':"
-			} else if state.Language == LangRU {
-				errMsg = "Пожалуйста, введите номер телефона или нажмите 'Поделиться номером':"
+		if text != "" {
+			state.ProjectInfo = text
+			// Try extracting phone from text if contact wasn't tapped
+			if phone == "" {
+				phone = extractPhoneNumber(text)
 			}
-			reply := tgbotapi.NewMessage(chatID, errMsg)
+		}
+
+		if phone != "" {
+			state.Phone = phone
+		}
+
+		if state.ProjectInfo == "" && phone != "" {
+			// User sent only contact, now ask for text description
+			prompt := "Telefon raqamingiz qabul qilindi! Endi proekt haqida to'liq ma'lumot yozing:"
+			if state.Language == LangEN {
+				prompt = "Phone number received! Now please write full information about your project:"
+			} else if state.Language == LangRU {
+				prompt = "Номер получен! Теперь напишите полную информацию о вашем проекте:"
+			}
+			reply := tgbotapi.NewMessage(chatID, prompt)
 			_, _ = bot.Send(reply)
 			return
 		}
 
-		state.Phone = phone
-		state.Step = StepWaitingProject
-
-		askProjectDetails(bot, chatID, state.Language)
-
-	case StepWaitingProject:
-		if text == "" {
-			errMsg := "Iltimos, loyihangiz haqida batafsil matn yozing:"
-			if state.Language == LangEN {
-				errMsg = "Please write detailed information about your project:"
-			} else if state.Language == LangRU {
-				errMsg = "Пожалуйста, напишите подробную информацию о вашем проекте:"
-			}
-			reply := tgbotapi.NewMessage(chatID, errMsg)
-			_, _ = bot.Send(reply)
+		if state.ProjectInfo == "" {
+			askProjectDetails(bot, chatID, state.Language)
 			return
 		}
-		state.ProjectInfo = text
-		state.Step = StepWaitingTech
 
-		showTechOptions(bot, chatID, state.Language)
-
-	case StepWaitingTech:
-		r, n, v := getTechLabels(state.Language)
-		switch {
-		case text == r || strings.EqualFold(text, "react") || strings.EqualFold(text, "react.js"):
-			finishOrder(bot, chatID, userID, state, r)
-		case text == n || strings.EqualFold(text, "next") || strings.EqualFold(text, "next.js"):
-			finishOrder(bot, chatID, userID, state, n)
-		case text == v || strings.EqualFold(text, "vue") || strings.EqualFold(text, "vue.js"):
-			finishOrder(bot, chatID, userID, state, v)
-		default:
-			showTechOptions(bot, chatID, state.Language)
-		}
+		// Order complete!
+		finishOrder(bot, chatID, userID, state)
 
 	default:
-		welcomeMsg := "Assalomu alaykum! Yangi loyiha bo'yicha ariza qoldirish uchun /order yoki /start bosing."
+		welcomeMsg := "Assalomu alaykum! Yangi loyiha bo'yicha buyurtma berish uchun /order yoki /start bosing."
 		if state.Language == LangEN {
 			welcomeMsg = "Hello! To submit a new project order, press /order or /start."
 		} else if state.Language == LangRU {
-			welcomeMsg = "Здравствуйте! Чтобы оставить заявку на проект, нажмите /order или /start."
+			welcomeMsg = "Здравствуйте! Чтобы оформить заявку на проект, нажмите /order или /start."
 		}
 		reply := tgbotapi.NewMessage(chatID, welcomeMsg)
 		_, _ = bot.Send(reply)
 	}
 }
 
-func askPhone(bot *tgbotapi.BotAPI, chatID int64, state *UserState) {
-	var promptText, btnContactText, btnCancelText string
+func startFlow(bot *tgbotapi.BotAPI, chatID int64, userID int64, username, firstName string, l Lang) {
+	state := getOrCreateState(userID, username)
+	state.Step = StepWaitingName
+	state.Language = l
 
-	switch state.Language {
+	var msgText string
+	switch l {
 	case LangEN:
-		promptText = fmt.Sprintf(
-			"Thank you, <b>%s</b>!\n\n"+
-				"2️⃣ <b>Please enter your phone number:</b>\n"+
-				"<i>(You can tap '📱 Share Phone Number' below or type it manually)</i>",
-			html.EscapeString(state.Name),
-		)
+		msgText = "👋 <b>Welcome!</b> 🚀\n\n" +
+			"I am the official bot of <b>Haydarali Akbarov</b> — Full Stack Developer & Telegram Bot Engineer.\n\n" +
+			"1️⃣ <b>Please enter your name or company name:</b>"
+	case LangRU:
+		msgText = "👋 <b>Здравствуйте!</b> 🚀\n\n" +
+			"Я официальный бот <b>Хайдарали Акбарова</b> — Full Stack разработчика и создателя Telegram-ботов.\n\n" +
+			"1️⃣ <b>Пожалуйста, введите ваше имя или название компании:</b>"
+	default:
+		msgText = "👋 <b>Assalomu alaykum!</b> 🚀\n\n" +
+			"Men <b>Haydarali Akbarov</b> — Full Stack Developer va Telegram Bot dasturchisining rasmiy botiman.\n\n" +
+			"1️⃣ <b>Ismingiz yoki kompaniyangiz nomini kiriting:</b>"
+	}
+
+	reply := tgbotapi.NewMessage(chatID, msgText)
+	reply.ParseMode = tgbotapi.ModeHTML
+	reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+	_, _ = bot.Send(reply)
+}
+
+func showServiceOptions(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
+	var prompt string
+	switch l {
+	case LangEN:
+		prompt = "2️⃣ <b>Select the service type:</b>\n\n" +
+			"Please choose the direction you need for your project:"
+	case LangRU:
+		prompt = "2️⃣ <b>Выберите тип услуги:</b>\n\n" +
+			"Пожалуйста, выберите необходимое направление для вашего проекта:"
+	default:
+		prompt = "2️⃣ <b>Xizmat turini tanlang:</b>\n\n" +
+			"Iltimos, loyihangiz uchun kerakli yo'nalishni tanlang:"
+	}
+
+	btn1 := tgbotapi.NewInlineKeyboardButtonData(ServiceFrontend, "service:frontend")
+	btn2 := tgbotapi.NewInlineKeyboardButtonData(ServiceFullstack, "service:fullstack")
+	btn3 := tgbotapi.NewInlineKeyboardButtonData(ServiceTelegram, "service:telegram")
+
+	inlineKb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(btn1),
+		tgbotapi.NewInlineKeyboardRow(btn2),
+		tgbotapi.NewInlineKeyboardRow(btn3),
+	)
+
+	reply := tgbotapi.NewMessage(chatID, prompt)
+	reply.ParseMode = tgbotapi.ModeHTML
+	reply.ReplyMarkup = inlineKb
+	_, _ = bot.Send(reply)
+}
+
+func showFrontendTechOptions(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
+	var prompt string
+	switch l {
+	case LangEN:
+		prompt = "3️⃣ <b>Web site frontend — Choose technology:</b>\n\n" +
+			"Please select your preferred frontend framework:"
+	case LangRU:
+		prompt = "3️⃣ <b>Web site frontend — Выберите технологию:</b>\n\n" +
+			"Пожалуйста, выберите подходящий frontend фреймворк:"
+	default:
+		prompt = "3️⃣ <b>Web site frontend — Texnologiyani tanlang:</b>\n\n" +
+			"Loyihangiz qaysi frontend texnologiyasida bo'lishini xohlaysiz?"
+	}
+
+	btn1 := tgbotapi.NewInlineKeyboardButtonData("⚛️ React.js", "tech:react")
+	btn2 := tgbotapi.NewInlineKeyboardButtonData("🟢 Vue.js", "tech:vue")
+	btn3 := tgbotapi.NewInlineKeyboardButtonData("▲ Next.js", "tech:next")
+	btn4 := tgbotapi.NewInlineKeyboardButtonData("🅰️ Angular.js", "tech:angular")
+
+	inlineKb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(btn1, btn2),
+		tgbotapi.NewInlineKeyboardRow(btn3, btn4),
+	)
+
+	reply := tgbotapi.NewMessage(chatID, prompt)
+	reply.ParseMode = tgbotapi.ModeHTML
+	reply.ReplyMarkup = inlineKb
+	_, _ = bot.Send(reply)
+}
+
+func showFullstackTechOptions(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
+	var prompt string
+	switch l {
+	case LangEN:
+		prompt = "3️⃣ <b>Web site Full stack — Choose technology:</b>\n\n" +
+			"Please select your backend/full-stack stack:"
+	case LangRU:
+		prompt = "3️⃣ <b>Web site Full stack — Выберите технологию:</b>\n\n" +
+			"Пожалуйста, выберите backend/full-stack стек:"
+	default:
+		prompt = "3️⃣ <b>Web site Full stack — Texnologiyani tanlang:</b>\n\n" +
+			"Full stack loyihangiz qaysi texnologiyada qurilishini xohlaysiz?"
+	}
+
+	btn1 := tgbotapi.NewInlineKeyboardButtonData("🟢 Node.js", "tech:nodejs")
+	btn2 := tgbotapi.NewInlineKeyboardButtonData("🐍 Python", "tech:python")
+
+	inlineKb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(btn1, btn2),
+	)
+
+	reply := tgbotapi.NewMessage(chatID, prompt)
+	reply.ParseMode = tgbotapi.ModeHTML
+	reply.ReplyMarkup = inlineKb
+	_, _ = bot.Send(reply)
+}
+
+func showTelegramTechOptions(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
+	var prompt string
+	switch l {
+	case LangEN:
+		prompt = "3️⃣ <b>Telegram bot — Choose technology:</b>\n\n" +
+			"Please select the development technology for your bot:"
+	case LangRU:
+		prompt = "3️⃣ <b>Telegram bot — Выберите технологию:</b>\n\n" +
+			"Пожалуйста, выберите технологию для разработки бота:"
+	default:
+		prompt = "3️⃣ <b>Telegram bot — Texnologiyani tanlang:</b>\n\n" +
+			"Telegram botingiz qaysi tilda yaratilishini xohlaysiz?"
+	}
+
+	btn1 := tgbotapi.NewInlineKeyboardButtonData("🐍 Python", "tech:bot_python")
+	btn2 := tgbotapi.NewInlineKeyboardButtonData("🟢 Node.js", "tech:bot_nodejs")
+	btn3 := tgbotapi.NewInlineKeyboardButtonData("🐹 Go (Golang)", "tech:bot_go")
+
+	inlineKb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(btn1),
+		tgbotapi.NewInlineKeyboardRow(btn2),
+		tgbotapi.NewInlineKeyboardRow(btn3),
+	)
+
+	reply := tgbotapi.NewMessage(chatID, prompt)
+	reply.ParseMode = tgbotapi.ModeHTML
+	reply.ReplyMarkup = inlineKb
+	_, _ = bot.Send(reply)
+}
+
+func matchTechInput(text, serviceType string) string {
+	clean := strings.ToLower(text)
+	switch {
+	case strings.Contains(clean, "react"):
+		return "⚛️ React.js"
+	case strings.Contains(clean, "vue"):
+		return "🟢 Vue.js"
+	case strings.Contains(clean, "next"):
+		return "▲ Next.js"
+	case strings.Contains(clean, "angular") || strings.Contains(clean, "anglor"):
+		return "🅰️ Angular.js"
+	case strings.Contains(clean, "node"):
+		return "🟢 Node.js"
+	case strings.Contains(clean, "python"):
+		return "🐍 Python"
+	case strings.Contains(clean, "golang") || strings.Contains(clean, "go "):
+		return "🐹 Go (Golang)"
+	}
+	return ""
+}
+
+func askProjectDetails(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
+	var prompt, btnContactText, btnCancelText string
+	switch l {
+	case LangEN:
+		prompt = "🎯 <b>Please provide full information about the project!</b>\n\n" +
+			"💡 <b>Describe:</b>\n" +
+			"• Purpose and key features of your project\n" +
+			"• Deadline and expectations\n" +
+			"• 📞 <i>Your phone number for contact (or tap '📱 Share Phone Number' below):</i>"
 		btnContactText = "📱 Share Phone Number"
 		btnCancelText = "❌ Cancel"
 	case LangRU:
-		promptText = fmt.Sprintf(
-			"Спасибо, <b>%s</b>!\n\n"+
-				"2️⃣ <b>Введите ваш номер телефона для связи:</b>\n"+
-				"<i>(Вы можете нажать кнопку '📱 Поделиться номером' ниже или написать вручную)</i>",
-			html.EscapeString(state.Name),
-		)
+		prompt = "🎯 <b>Пожалуйста, предоставьте полную информацию о проекте!</b>\n\n" +
+			"💡 <b>Опишите:</b>\n" +
+			"• Цели и ключевые функции вашего проекта\n" +
+			"• Желаемые сроки и требования\n" +
+			"• 📞 <i>Ваш номер телефона для связи (или нажмите кнопку ниже):</i>"
 		btnContactText = "📱 Поделиться номером"
 		btnCancelText = "❌ Отмена"
 	default:
-		promptText = fmt.Sprintf(
-			"Rahmat, <b>%s</b>!\n\n"+
-				"2️⃣ <b>Bog'lanish uchun telefon raqamingizni kiriting:</b>\n"+
-				"<i>(Pastdagi '📱 Telefon raqamni ulashish' tugmasini bosishingiz yoki raqamingizni yozib yuborishingiz mumkin)</i>",
-			html.EscapeString(state.Name),
-		)
+		prompt = "🎯 <b>Proekt haqida to'liq ma'lumot bering iltimos!</b>\n\n" +
+			"💡 <b>Tavsiya qilinadigan ma'lumotlar:</b>\n" +
+			"• Loyihangiz maqsadi va kerakli imkoniyatlari\n" +
+			"• Taxminiy topshirish muddati va talablar\n" +
+			"• 📞 <i>Bog'lanish uchun telefon raqamingiz (yoki pastdagi tugmani bosing):</i>"
 		btnContactText = "📱 Telefon raqamni ulashish"
 		btnCancelText = "❌ Bekor qilish"
 	}
 
-	reply := tgbotapi.NewMessage(chatID, promptText)
+	reply := tgbotapi.NewMessage(chatID, prompt)
 	reply.ParseMode = tgbotapi.ModeHTML
 
 	contactBtn := tgbotapi.NewKeyboardButtonContact(btnContactText)
@@ -565,85 +733,6 @@ func askPhone(bot *tgbotapi.BotAPI, chatID int64, state *UserState) {
 	_, _ = bot.Send(reply)
 }
 
-func askProjectDetails(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
-	var prompt string
-	switch l {
-	case LangEN:
-		prompt = "Great! Now please describe your project in detail. 🎯\n\n" +
-			"3️⃣ <b>What kind of project do you need? Provide full details:</b>\n\n" +
-			"💡 <b>Recommended information:</b>\n" +
-			"• Project type (Landing page, Corporate website, E-commerce, CRM, Web application)\n" +
-			"• Key features and required sections\n" +
-			"• Estimated deadline and budget\n" +
-			"• Any additional preferences or references\n\n" +
-			"Please write everything in detail:"
-	case LangRU:
-		prompt = "Отлично! Теперь расскажите подробно о вашем проекте. 🎯\n\n" +
-			"3️⃣ <b>Какой проект вам нужен? Предоставьте полную информацию:</b>\n\n" +
-			"💡 <b>Рекомендуемые данные:</b>\n" +
-			"• Тип проекта (Landing page, Корпоративный сайт, Интернет-магазин, CRM, Веб-приложение)\n" +
-			"• Необходимые ключевые функции и страницы\n" +
-			"• Примерные сроки и бюджет\n" +
-			"• Любые дополнительные пожелания\n\n" +
-			"Пожалуйста, опишите всё подробно:"
-	default:
-		prompt = "Ajoyib! Endi esa loyiha haqida to'liq informatsiya bering. 🎯\n\n" +
-			"3️⃣ <b>Qanaqa loyiha qilmoqchisiz? Loyiha haqida to'liq ma'lumot bering:</b>\n\n" +
-			"💡 <b>Tavsiya qilinadigan ma'lumotlar:</b>\n" +
-			"• Loyiha turi (Landing page, Korporativ sayt, Online do'kon, CRM, Web dastur)\n" +
-			"• Kerakli asosiy funksiyalar va imkoniyatlar\n" +
-			"• Taxminiy topshirish muddati va byudjet\n" +
-			"• Boshqa qo'shimcha talablar\n\n" +
-			"Iltimos, barchasini batafsil yozib qoldiring:"
-	}
-
-	reply := tgbotapi.NewMessage(chatID, prompt)
-	reply.ParseMode = tgbotapi.ModeHTML
-	reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-	_, _ = bot.Send(reply)
-}
-
-func showTechOptions(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
-	r, n, v := getTechLabels(l)
-
-	var prompt string
-	switch l {
-	case LangEN:
-		prompt = "4️⃣ <b>Which technology do you prefer for your project?</b>\n\n" +
-			"Please select one of the 3 options below:\n\n" +
-			"• <b>" + r + "</b>\n" +
-			"• <b>" + n + "</b>\n" +
-			"• <b>" + v + "</b>"
-	case LangRU:
-		prompt = "4️⃣ <b>Какую технологию вы предпочитаете для вашего проекта?</b>\n\n" +
-			"Пожалуйста, выберите один из 3 вариантов ниже:\n\n" +
-			"• <b>" + r + "</b>\n" +
-			"• <b>" + n + "</b>\n" +
-			"• <b>" + v + "</b>"
-	default:
-		prompt = "4️⃣ <b>Loyihangiz uchun qaysi texnologiyani ma'qul ko'rasiz?</b>\n\n" +
-			"Quyidagi 3 ta variantdan birini tanlang:\n\n" +
-			"• <b>" + r + "</b>\n" +
-			"• <b>" + n + "</b>\n" +
-			"• <b>" + v + "</b>"
-	}
-
-	btn1 := tgbotapi.NewInlineKeyboardButtonData(r, "tech:react")
-	btn2 := tgbotapi.NewInlineKeyboardButtonData(n, "tech:next")
-	btn3 := tgbotapi.NewInlineKeyboardButtonData(v, "tech:vue")
-
-	inlineKb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(btn1),
-		tgbotapi.NewInlineKeyboardRow(btn2),
-		tgbotapi.NewInlineKeyboardRow(btn3),
-	)
-
-	reply := tgbotapi.NewMessage(chatID, prompt)
-	reply.ParseMode = tgbotapi.ModeHTML
-	reply.ReplyMarkup = inlineKb
-	_, _ = bot.Send(reply)
-}
-
 func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 	if cb == nil || cb.From == nil {
 		return
@@ -654,12 +743,11 @@ func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 		chatID = cb.Message.Chat.ID
 	}
 
-	// Answer callback to remove spinner
 	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 
 	state := getOrCreateState(userID, cb.From.UserName)
 
-	// Language selection callback
+	// 1. Language selection callback
 	if strings.HasPrefix(cb.Data, "set_lang:") {
 		langCode := strings.TrimPrefix(cb.Data, "set_lang:")
 		switch langCode {
@@ -671,37 +759,62 @@ func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 			state.Language = LangUZ
 		}
 		state.Step = StepWaitingName
-
 		startFlow(bot, chatID, userID, cb.From.UserName, cb.From.FirstName, state.Language)
 		return
 	}
 
-	// Technology selection callback
-	r, n, v := getTechLabels(state.Language)
-	var selectedTech string
-	switch cb.Data {
-	case "tech:react":
-		selectedTech = r
-	case "tech:next":
-		selectedTech = n
-	case "tech:vue":
-		selectedTech = v
-	default:
+	// 2. Service selection callback
+	if strings.HasPrefix(cb.Data, "service:") {
+		servCode := strings.TrimPrefix(cb.Data, "service:")
+		state.Step = StepWaitingTech
+
+		switch servCode {
+		case "frontend":
+			state.ServiceType = ServiceFrontend
+			showFrontendTechOptions(bot, chatID, state.Language)
+		case "fullstack":
+			state.ServiceType = ServiceFullstack
+			showFullstackTechOptions(bot, chatID, state.Language)
+		case "telegram":
+			state.ServiceType = ServiceTelegram
+			showTelegramTechOptions(bot, chatID, state.Language)
+		}
 		return
 	}
 
-	if state.Name == "" || state.ProjectInfo == "" {
-		startOrder(bot, chatID, userID, cb.From.UserName, state.Language)
+	// 3. Technology selection callback
+	if strings.HasPrefix(cb.Data, "tech:") {
+		techCode := strings.TrimPrefix(cb.Data, "tech:")
+		var chosenTech string
+
+		switch techCode {
+		case "react":
+			chosenTech = "⚛️ React.js"
+		case "vue":
+			chosenTech = "🟢 Vue.js"
+		case "next":
+			chosenTech = "▲ Next.js"
+		case "angular":
+			chosenTech = "🅰️ Angular.js"
+		case "nodejs", "bot_nodejs":
+			chosenTech = "🟢 Node.js"
+		case "python", "bot_python":
+			chosenTech = "🐍 Python"
+		case "bot_go":
+			chosenTech = "🐹 Go (Golang)"
+		default:
+			chosenTech = techCode
+		}
+
+		state.Technology = chosenTech
+		state.Step = StepWaitingProject
+		askProjectDetails(bot, chatID, state.Language)
 		return
 	}
-
-	finishOrder(bot, chatID, userID, state, selectedTech)
 }
 
-func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserState, selectedTech string) {
-	state.Technology = selectedTech
+func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserState) {
 	state.Step = StepChooseLang
-
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 
 	tgDisplay := "ko'rsatilmagan"
@@ -709,7 +822,22 @@ func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserSt
 		tgDisplay = "@" + state.Telegram
 	}
 
-	// 1. Reply to client in their chosen language
+	phoneDisplay := state.Phone
+	if phoneDisplay == "" {
+		phoneDisplay = "Loyiha matnida / Telegram orqali"
+	}
+
+	serviceDisplay := state.ServiceType
+	if serviceDisplay == "" {
+		serviceDisplay = "Web sayt / Dasturiy ta'minot"
+	}
+
+	techDisplay := state.Technology
+	if techDisplay == "" {
+		techDisplay = "Kengaytirilgan Full Stack"
+	}
+
+	// 1. Reply to client
 	var clientSummary string
 	switch state.Language {
 	case LangEN:
@@ -717,18 +845,20 @@ func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserSt
 			"🎉 <b>Thank you! Your project order has been successfully received!</b>\n\n"+
 				"📋 <b>Order Summary:</b>\n"+
 				"👤 <b>Client:</b> %s\n"+
+				"💼 <b>Service Type:</b> %s\n"+
+				"🛠 <b>Selected Technology:</b> <b>%s</b>\n"+
 				"📞 <b>Phone:</b> %s\n"+
-				"✈️ <b>Telegram:</b> %s\n"+
-				"🛠 <b>Selected Technology:</b> <b>%s</b>\n\n"+
-				"📝 <b>Project Details:</b>\n"+
+				"✈️ <b>Telegram:</b> %s\n\n"+
+				"📝 <b>Project Information:</b>\n"+
 				"<i>%s</i>\n\n"+
 				"━━━━━━━━━━━━━━━━━━━━━\n"+
 				"⏳ <b>Haydarali Akbarov</b> will contact you shortly!\n\n"+
 				"Direct Contact: @haydaraliakbarov | +998 88 083 19 88",
 			html.EscapeString(state.Name),
-			html.EscapeString(state.Phone),
+			html.EscapeString(serviceDisplay),
+			html.EscapeString(techDisplay),
+			html.EscapeString(phoneDisplay),
 			html.EscapeString(tgDisplay),
-			html.EscapeString(state.Technology),
 			html.EscapeString(state.ProjectInfo),
 		)
 	case LangRU:
@@ -736,18 +866,20 @@ func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserSt
 			"🎉 <b>Спасибо! Ваш заказ успешно принят!</b>\n\n"+
 				"📋 <b>Детали заказа:</b>\n"+
 				"👤 <b>Клиент:</b> %s\n"+
+				"💼 <b>Тип услуги:</b> %s\n"+
+				"🛠 <b>Выбранная технология:</b> <b>%s</b>\n"+
 				"📞 <b>Телефон:</b> %s\n"+
-				"✈️ <b>Telegram:</b> %s\n"+
-				"🛠 <b>Выбранная технология:</b> <b>%s</b>\n\n"+
-				"📝 <b>О проекте:</b>\n"+
+				"✈️ <b>Telegram:</b> %s\n\n"+
+				"📝 <b>Информация о проекте:</b>\n"+
 				"<i>%s</i>\n\n"+
 				"━━━━━━━━━━━━━━━━━━━━━\n"+
 				"⏳ <b>Хайдарали Акбаров</b> свяжется с вами в ближайшее время!\n\n"+
 				"Контакты: @haydaraliakbarov | +998 88 083 19 88",
 			html.EscapeString(state.Name),
-			html.EscapeString(state.Phone),
+			html.EscapeString(serviceDisplay),
+			html.EscapeString(techDisplay),
+			html.EscapeString(phoneDisplay),
 			html.EscapeString(tgDisplay),
-			html.EscapeString(state.Technology),
 			html.EscapeString(state.ProjectInfo),
 		)
 	default:
@@ -755,34 +887,37 @@ func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserSt
 			"🎉 <b>Rahmat! Buyurtmangiz muvaffaqiyatli qabul qilindi!</b>\n\n"+
 				"📋 <b>Buyurtma xulosasi:</b>\n"+
 				"👤 <b>Mijoz:</b> %s\n"+
-				"📞 <b>Telefon:</b> %s\n"+
-				"✈️ <b>Telegram:</b> %s\n"+
-				"🛠 <b>Tanlangan texnologiya:</b> <b>%s</b>\n\n"+
+				"💼 <b>Xizmat turi:</b> %s\n"+
+				"🛠 <b>Tanlangan texnologiya:</b> <b>%s</b>\n"+
+				"📞 <b>Telefon / Aloqa:</b> %s\n"+
+				"✈️ <b>Telegram:</b> %s\n\n"+
 				"📝 <b>Loyiha haqida to'liq ma'lumot:</b>\n"+
 				"<i>%s</i>\n\n"+
 				"━━━━━━━━━━━━━━━━━━━━━\n"+
 				"⏳ Tez orada <b>Haydarali Akbarov</b> siz bilan bog'lanadi!\n\n"+
 				"Aloqa: @haydaraliakbarov | +998 88 083 19 88",
 			html.EscapeString(state.Name),
-			html.EscapeString(state.Phone),
+			html.EscapeString(serviceDisplay),
+			html.EscapeString(techDisplay),
+			html.EscapeString(phoneDisplay),
 			html.EscapeString(tgDisplay),
-			html.EscapeString(state.Technology),
 			html.EscapeString(state.ProjectInfo),
 		)
 	}
 
 	reply := tgbotapi.NewMessage(chatID, clientSummary)
 	reply.ParseMode = tgbotapi.ModeHTML
+	reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 	_, _ = bot.Send(reply)
 
-	// 2. ROUTING: KANALGA VA SIZGA (MEN) YUBORISH
-	sendOrderRouting(bot, state, userID, chatID, nowStr, "Telegram Bot")
+	// 2. ROUTING: KANALGA VA ADMIN (MEN) GA YUBORISH
+	sendOrderRouting(bot, state, userID, chatID, nowStr, "Telegram Bot", serviceDisplay, techDisplay, phoneDisplay)
 
 	// 3. Clear session
 	clearState(userID)
 }
 
-func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chatID int64, timestamp, source string) {
+func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chatID int64, timestamp, source, serviceType, technology, phone string) {
 	tgUserLink := "Mavjud emas"
 	if state.Telegram != "" {
 		tgUserLink = fmt.Sprintf("@%s (ID: <code>%d</code>)", state.Telegram, userID)
@@ -794,10 +929,11 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chat
 		"📢 <b>YANGI LOYIHA BUYURTMASI!</b> 🚀\n"+
 			"━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
 			"👤 <b>Mijoz:</b> %s\n"+
+			"💼 <b>Xizmat turi:</b> %s\n"+
+			"🛠 <b>Tanlangan texnologiya:</b> <b>%s</b>\n"+
 			"📞 <b>Telefon / Aloqa:</b> <code>%s</code>\n"+
 			"✈️ <b>Telegram:</b> %s\n"+
 			"🌐 <b>Tanlangan til:</b> %s\n"+
-			"🛠 <b>Tanlangan texnologiya:</b> <b>%s</b>\n"+
 			"━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
 			"📋 <b>Loyiha haqida to'liq ma'lumot:</b>\n"+
 			"%s\n"+
@@ -805,10 +941,11 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chat
 			"📅 <b>Vaqt:</b> %s\n"+
 			"🌐 <b>Manba:</b> %s",
 		html.EscapeString(state.Name),
-		html.EscapeString(state.Phone),
+		html.EscapeString(serviceType),
+		html.EscapeString(technology),
+		html.EscapeString(phone),
 		tgUserLink,
 		getLangName(state.Language),
-		html.EscapeString(state.Technology),
 		html.EscapeString(state.ProjectInfo),
 		html.EscapeString(timestamp),
 		html.EscapeString(source),
@@ -853,13 +990,6 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chat
 		}
 	} else {
 		log.Println("⚠️ Kanal ID hali ulanmagan. Kanaldan xabar forward qiling.")
-		if chatID != 0 {
-			warnMsg := "⚠️ <b>Eslatma:</b> Buyurtmangiz qabul qilindi, lekin Telegram kanali hali ulanmagan!\n\n" +
-				"Kanalni ulash uchun: Kanalingizga kirib bitta so'z yozing (masalan <code>salom</code>) yoki o'sha kanaldan bitta xabarni shu botga <b>Forward</b> qiling!"
-			warn := tgbotapi.NewMessage(chatID, warnMsg)
-			warn.ParseMode = tgbotapi.ModeHTML
-			_, _ = bot.Send(warn)
-		}
 	}
 
 	// 2. Send to Admin personally (kanal -> men)
@@ -868,103 +998,43 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chat
 		adminMsg.ParseMode = tgbotapi.ModeHTML
 		_, err := bot.Send(adminMsg)
 		if err != nil {
-			log.Printf("Warning: failed to notify admin: %v", err)
+			log.Printf("❌ Adminga yuborishda xatolik: %v", err)
 		} else {
-			log.Printf("✅ Buyurtma shaxsan sizga ham yetkazildi (Admin: %d)", curAdmin)
+			log.Println("✅ Buyurtma shaxsan adminga yuborildi")
 		}
 	}
-}
-
-func startFlow(bot *tgbotapi.BotAPI, chatID int64, userID int64, username, firstName string, l Lang) {
-	state := getOrCreateState(userID, username)
-	state.Step = StepWaitingName
-	state.Language = l
-
-	var msgText string
-	switch l {
-	case LangEN:
-		msgText = fmt.Sprintf(
-			"1️⃣ <b>Please enter your full name (or company name):</b>",
-		)
-	case LangRU:
-		msgText = fmt.Sprintf(
-			"1️⃣ <b>Пожалуйста, введите ваше имя и фамилию (или название компании):</b>",
-		)
-	default:
-		msgText = fmt.Sprintf(
-			"1️⃣ <b>Iltimos, ismingiz va familiyangizni (yoki kompaniyangiz nomini) kiriting:</b>",
-		)
-	}
-
-	reply := tgbotapi.NewMessage(chatID, msgText)
-	reply.ParseMode = tgbotapi.ModeHTML
-	reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-	_, _ = bot.Send(reply)
-}
-
-func startOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, username string, l Lang) {
-	state := getOrCreateState(userID, username)
-	state.Step = StepWaitingName
-	state.Language = l
-
-	var msgText string
-	switch l {
-	case LangEN:
-		msgText = "🚀 <b>Submit a New Project Order</b>\n\n" +
-			"1️⃣ <b>Please enter your full name (or company name):</b>"
-	case LangRU:
-		msgText = "🚀 <b>Оформить заказ на новый проект</b>\n\n" +
-			"1️⃣ <b>Пожалуйста, введите ваше имя и фамилию (или название компании):</b>"
-	default:
-		msgText = "🚀 <b>Yangi loyiha bo'yicha buyurtma berish</b>\n\n" +
-			"1️⃣ <b>Iltimos, ismingiz va familiyangizni (yoki kompaniyangiz nomini) kiriting:</b>"
-	}
-
-	reply := tgbotapi.NewMessage(chatID, msgText)
-	reply.ParseMode = tgbotapi.ModeHTML
-	reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-	_, _ = bot.Send(reply)
 }
 
 func sendHelp(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
 	var helpText string
 	switch l {
 	case LangEN:
-		helpText = "ℹ️ <b>Haydarali Akbarov — Portfolio Bot</b>\n\n" +
-			"📌 <b>Commands:</b>\n" +
-			"/start — Start bot and choose language\n" +
-			"/lang — Change language\n" +
-			"/order — Submit a new project request\n" +
-			"/channel — Check channel link status\n" +
-			"/portfolio — View portfolio and skills\n" +
-			"/cancel — Cancel current process\n\n" +
-			"📞 <b>Contact Developer:</b>\n" +
-			"Telegram: @haydaraliakbarov\n" +
-			"Phone: +998 88 083 19 88"
+		helpText = "🤖 <b>Bot Help & Commands:</b>\n\n" +
+			"/start - Restart bot and select language\n" +
+			"/order - Submit a new project order\n" +
+			"/lang - Change communication language\n" +
+			"/portfolio - View developer portfolio\n" +
+			"/channel - Check Telegram Channel status\n" +
+			"/cancel - Cancel active order\n\n" +
+			"Direct Contact: @haydaraliakbarov"
 	case LangRU:
-		helpText = "ℹ️ <b>Хайдарали Акбаров — Портфолио-бот</b>\n\n" +
-			"📌 <b>Команды:</b>\n" +
-			"/start — Запустить бота и выбрать язык\n" +
-			"/lang — Сменить язык\n" +
-			"/order — Оформить заказ на проект\n" +
-			"/channel — Проверить статус привязки канала\n" +
-			"/portfolio — Посмотреть портфолио разработчика\n" +
-			"/cancel — Отменить текущее действие\n\n" +
-			"📞 <b>Контакты разработчика:</b>\n" +
-			"Telegram: @haydaraliakbarov\n" +
-			"Телефон: +998 88 083 19 88"
+		helpText = "🤖 <b>Помощь и команды бота:</b>\n\n" +
+			"/start - Перезапустить бота и выбрать язык\n" +
+			"/order - Оформить заказ на проект\n" +
+			"/lang - Сменить язык общения\n" +
+			"/portfolio - Посмотреть портфолио разработчика\n" +
+			"/channel - Проверить статус канала\n" +
+			"/cancel - Отменить текущий заказ\n\n" +
+			"Связь с разработчиком: @haydaraliakbarov"
 	default:
-		helpText = "ℹ️ <b>Haydarali Akbarov — Portfolio Bot</b>\n\n" +
-			"📌 <b>Buyruqlar:</b>\n" +
-			"/start — Botni ishga tushirish va tilni tanlash\n" +
-			"/lang — Tilni o'zgartirish\n" +
-			"/order — Yangi loyiha buyurtma berish\n" +
-			"/channel — Kanal ulanish holatini tekshirish\n" +
-			"/portfolio — Dasturchi portfoliosi\n" +
-			"/cancel — Jarayonni bekor qilish\n\n" +
-			"📞 <b>Aloqa:</b>\n" +
-			"Telegram: @haydaraliakbarov\n" +
-			"Telefon: +998 88 083 19 88"
+		helpText = "🤖 <b>Bot bo'yicha yordam va buyruqlar:</b>\n\n" +
+			"/start - Botni qayta ishga tushirish va tilni tanlash\n" +
+			"/order - Yangi loyiha bo'yicha buyurtma berish\n" +
+			"/lang - Muloqot tilini o'zgartirish\n" +
+			"/portfolio - Dasturchi portfoliosini ko'rish\n" +
+			"/channel - Telegram kanal holatini tekshirish\n" +
+			"/cancel - Buyurtmani bekor qilish\n\n" +
+			"Dasturchi bilan to'g'ridan-to'g'ri aloqa: @haydaraliakbarov"
 	}
 
 	reply := tgbotapi.NewMessage(chatID, helpText)
@@ -973,37 +1043,32 @@ func sendHelp(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
 }
 
 func sendPortfolio(bot *tgbotapi.BotAPI, chatID int64, l Lang) {
-	r, n, v := getTechLabels(l)
-
 	var portfolioText string
 	switch l {
 	case LangEN:
-		portfolioText = "🌐 <b>Akbarov Haydarali — Frontend Web Developer</b>\n\n" +
-			"Specialist in building modern, performant, and responsive web applications.\n\n" +
-			"🛠 <b>Main Stack:</b>\n" +
-			"• " + r + "\n" +
-			"• " + n + "\n" +
-			"• " + v + "\n\n" +
+		portfolioText = "🌐 <b>Akbarov Haydarali — Full Stack & Telegram Bot Developer</b>\n\n" +
+			"Specialist in building modern, performant, and scalable web applications & automated bots.\n\n" +
+			"🛠 <b>Frontend:</b> React.js, Next.js, Vue.js, Angular.js\n" +
+			"⚡️ <b>Backend:</b> Node.js, Python, Go (Golang)\n" +
+			"🤖 <b>Telegram Bots:</b> Python (Aiogram), Node.js, Go\n\n" +
 			"🔗 <b>GitHub:</b> github.com/akbarovhaydarali886-star\n\n" +
 			"Press /order to submit a project!"
 	case LangRU:
-		portfolioText = "🌐 <b>Хайдарали Акбаров — Frontend веб-разработчик</b>\n\n" +
-			"Специалист по созданию современных, быстрых и удобных веб-приложений.\n\n" +
-			"🛠 <b>Основной стек:</b>\n" +
-			"• " + r + "\n" +
-			"• " + n + "\n" +
-			"• " + v + "\n\n" +
+		portfolioText = "🌐 <b>Хайдарали Акбаров — Full Stack и Telegram Bot разработчик</b>\n\n" +
+			"Специалист по разработке современных веб-приложений и масштабируемых ботов.\n\n" +
+			"🛠 <b>Frontend:</b> React.js, Next.js, Vue.js, Angular.js\n" +
+			"⚡️ <b>Backend:</b> Node.js, Python, Go (Golang)\n" +
+			"🤖 <b>Telegram Bots:</b> Python (Aiogram), Node.js, Go\n\n" +
 			"🔗 <b>GitHub:</b> github.com/akbarovhaydarali886-star\n\n" +
 			"Нажмите /order, чтобы заказать проект!"
 	default:
-		portfolioText = "🌐 <b>Akbarov Haydarali — Frontend Web Dasturchi</b>\n\n" +
-			"Zamonaviy va sifatli veb-saytlar hamda web-ilovalarni yaratish bo'yicha mutaxassis.\n\n" +
-			"🛠 <b>Texnologiyalar:</b>\n" +
-			"• " + r + "\n" +
-			"• " + n + "\n" +
-			"• " + v + "\n\n" +
+		portfolioText = "🌐 <b>Akbarov Haydarali — Full Stack Developer & Telegram Bot Dasturchi</b>\n\n" +
+			"Zamonaviy veb-saytlar, murakkab web-tizimlar va avtomatlashtirilgan Telegram botlar yaratish bo'yicha mutaxassis.\n\n" +
+			"🛠 <b>Frontend:</b> React.js, Next.js, Vue.js, Angular.js\n" +
+			"⚡️ <b>Backend:</b> Node.js, Python, Go (Golang)\n" +
+			"🤖 <b>Telegram Botlar:</b> Python (Aiogram), Node.js, Go\n\n" +
 			"🔗 <b>GitHub:</b> github.com/akbarovhaydarali886-star\n\n" +
-			"Buyurtma berish uchun /order bosing!"
+			"Buyurtma berish uchun /order buyrug'ini bosing!"
 	}
 
 	reply := tgbotapi.NewMessage(chatID, portfolioText)
@@ -1022,12 +1087,13 @@ func handleWebOrder(bot *tgbotapi.BotAPI, w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		Name       string `json:"name"`
-		Phone      string `json:"phone"`
-		Telegram   string `json:"telegram"`
-		Project    string `json:"project"`
-		Technology string `json:"technology"`
-		Language   string `json:"language"`
+		Name        string `json:"name"`
+		ServiceType string `json:"service_type"`
+		Technology  string `json:"technology"`
+		Phone       string `json:"phone"`
+		Telegram    string `json:"telegram"`
+		Project     string `json:"project"`
+		Language    string `json:"language"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1043,37 +1109,43 @@ func handleWebOrder(bot *tgbotapi.BotAPI, w http.ResponseWriter, r *http.Request
 		l = LangRU
 	}
 
-	rTech, nTech, vTech := getTechLabels(l)
-	tech := req.Technology
-	switch strings.ToLower(tech) {
-	case "react", "react.js":
-		tech = rTech
-	case "next", "next.js":
-		tech = nTech
-	case "vue", "vue.js":
-		tech = vTech
-	default:
-		tech = "Ko'rsatilmagan"
+	serv := req.ServiceType
+	if serv == "" {
+		serv = "Veb-sayt buyurtmasi (Website)"
 	}
 
-	state := &UserState{
-		Language:    l,
+	tech := req.Technology
+	if tech == "" {
+		tech = "Full Stack"
+	}
+
+	tempState := &UserState{
 		Name:        req.Name,
-		Phone:       req.Phone,
-		Telegram:    req.Telegram,
-		ProjectInfo: req.Project,
+		ServiceType: serv,
 		Technology:  tech,
-		UpdatedAt:   time.Now(),
+		Phone:       req.Phone,
+		Telegram:    strings.TrimPrefix(req.Telegram, "@"),
+		ProjectInfo: req.Project,
+		Language:    l,
 	}
 
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
-	sendOrderRouting(bot, state, 0, 0, nowStr, "Portfolio Web-sayti")
+	sendOrderRouting(bot, tempState, 0, 0, nowStr, "Portfolio Sayt (Web API)", serv, tech, req.Phone)
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "Qabul qilindi"})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Buyurtmangiz muvaffaqiyatli qabul qilindi!",
+	})
 }
 
-// Helpers
+func extractPhoneNumber(s string) string {
+	re := regexp.MustCompile(`(\+?[0-9\s-]{9,16})`)
+	match := re.FindString(s)
+	return strings.TrimSpace(match)
+}
+
 func getOrCreateState(userID int64, username string) *UserState {
 	statesMu.Lock()
 	defer statesMu.Unlock()
@@ -1145,10 +1217,12 @@ func updateEnv(key, value string) {
 			return
 		}
 	}
+
 	lines := strings.Split(string(content), "\n")
 	found := false
 	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, key+"=") {
 			lines[i] = fmt.Sprintf("%s=%s", key, value)
 			found = true
 			break
@@ -1161,13 +1235,13 @@ func updateEnv(key, value string) {
 }
 
 func loadDotEnv(filepath string) {
-	f, err := os.Open(filepath)
+	file, err := os.Open(filepath)
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer file.Close()
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -1177,11 +1251,8 @@ func loadDotEnv(filepath string) {
 		if len(parts) == 2 {
 			k := strings.TrimSpace(parts[0])
 			v := strings.TrimSpace(parts[1])
-			if (strings.HasPrefix(v, "\"") && strings.HasSuffix(v, "\"")) ||
-				(strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'")) {
-				v = v[1 : len(v)-1]
-			}
-			if _, exists := os.LookupEnv(k); !exists {
+			v = strings.Trim(v, `"'`)
+			if os.Getenv(k) == "" {
 				_ = os.Setenv(k, v)
 			}
 		}
