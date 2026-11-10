@@ -55,20 +55,81 @@ type UserState struct {
 	UpdatedAt   time.Time
 }
 
+// Security & Anti-Spam Guard
+type SecurityGuard struct {
+	mu           sync.Mutex
+	messageTimes map[int64][]time.Time
+	orderTimes   map[int64]time.Time
+}
+
 var (
 	userStates = make(map[int64]*UserState)
 	statesMu   sync.RWMutex
 
+	security = &SecurityGuard{
+		messageTimes: make(map[int64][]time.Time),
+		orderTimes:   make(map[int64]time.Time),
+	}
+
 	// Config
 	botToken      string
 	channelID     string
-	adminChatID   int64
 	port          string
 	portfolioURL  string
 	developerTG   = "@haydaraliakbarov"
 	developerName = "Akbarov Haydarali"
 	cfgMu         sync.RWMutex
 )
+
+// Anti-flood check (max 5 requests per 3 seconds)
+func (sg *SecurityGuard) IsFlood(userID int64) bool {
+	sg.mu.Lock()
+	defer sg.mu.Unlock()
+
+	now := time.Now()
+	times := sg.messageTimes[userID]
+	var recent []time.Time
+	for _, t := range times {
+		if now.Sub(t) < 3*time.Second {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= 5 {
+		return true
+	}
+	recent = append(recent, now)
+	sg.messageTimes[userID] = recent
+	return false
+}
+
+// Cooldown between orders (30 seconds)
+func (sg *SecurityGuard) AllowOrder(userID int64) bool {
+	sg.mu.Lock()
+	defer sg.mu.Unlock()
+
+	lastOrder, exists := sg.orderTimes[userID]
+	if exists && time.Since(lastOrder) < 30*time.Second {
+		return false
+	}
+	sg.orderTimes[userID] = time.Now()
+	return true
+}
+
+// Anti-Spam / Phishing detector
+func isSpamOrPhishing(text string) bool {
+	lower := strings.ToLower(text)
+	spamKeywords := []string{
+		"1xbet", "mostbet", "pinup", "melbet", "vulkan", "kazino", "casino",
+		"free crypto", "free bitcoin", "airdrop", "click here to win",
+		"t.me/+fake", "free-robux", ".exe", ".scr", ".bat",
+	}
+	for _, word := range spamKeywords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
+}
 
 func getLangName(l Lang) string {
 	switch l {
@@ -84,6 +145,7 @@ func getLangName(l Lang) string {
 func main() {
 	log.Println("====================================================")
 	log.Println("⚡️ Haydarali Akbarov — Full Stack & Telegram Bot (Go)")
+	log.Println("🛡 Xavfsizlik & Anti-Spam tizimi faollashtirildi")
 	log.Println("====================================================")
 
 	loadConfig()
@@ -129,6 +191,7 @@ func main() {
 				"bot":         "@" + bot.Self.UserName,
 				"service":     "portfolio-fullstack-telegram-bot",
 				"languages":   []string{"uz", "en", "ru"},
+				"security":    "anti-flood, input-sanitization, channel-exclusive-routing",
 				"time":        time.Now().Format(time.RFC3339),
 				"channel_set": channelID != "",
 			})
@@ -172,7 +235,7 @@ func main() {
 			}
 		}()
 
-		// Keep-alive background ping so Render NEVER goes to sleep!
+		// Keep-alive background ping so Render stays awake
 		go func() {
 			time.Sleep(15 * time.Second)
 			ticker := time.NewTicker(4 * time.Minute)
@@ -180,7 +243,7 @@ func main() {
 				resp, err := http.Get(strings.TrimRight(webhookURL, "/") + "/health")
 				if err == nil {
 					_ = resp.Body.Close()
-					log.Println("💓 Keep-alive ping yuborildi (Render uxlab qolmaydi)")
+					log.Println("💓 Keep-alive ping yuborildi")
 				}
 			}
 		}()
@@ -259,28 +322,6 @@ func detectChannel(bot *tgbotapi.BotAPI, chat *tgbotapi.Chat) {
 	msg := tgbotapi.NewMessage(chat.ID, confirmText)
 	msg.ParseMode = tgbotapi.ModeHTML
 	_, _ = bot.Send(msg)
-
-	cfgMu.RLock()
-	adminID := adminChatID
-	cfgMu.RUnlock()
-
-	if adminID != 0 && adminID != chat.ID {
-		adminNotice := fmt.Sprintf(
-			"📢 <b>Taklif kanali ulandi!</b> 🚀\n\n"+
-				"Nomi: <b>%s</b>\n"+
-				"Kanal ID: <code>%s</code>\n\n"+
-				"💡 <b>Doimiy saqlash:</b>\n"+
-				"Render.com da <b>Environment</b> bo'limiga kirib:\n"+
-				"<code>TELEGRAM_CHANNEL_ID</code> = <code>%s</code>\n"+
-				"deb qo'shib qo'ysangiz, server qayta yonganda ham kanal uzilmaydi!",
-			html.EscapeString(chat.Title),
-			chID,
-			chID,
-		)
-		adminMsg := tgbotapi.NewMessage(adminID, adminNotice)
-		adminMsg.ParseMode = tgbotapi.ModeHTML
-		_, _ = bot.Send(adminMsg)
-	}
 }
 
 func showLanguageSelection(bot *tgbotapi.BotAPI, chatID int64) {
@@ -313,7 +354,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	chatID := msg.Chat.ID
 
-	// 1. IMPORTANT: If message is NOT private, do NOT run dialogue!
+	// 1. IMPORTANT: If message is NOT private, do NOT run dialogue (prevents channel spam)!
 	if !msg.Chat.IsPrivate() {
 		if msg.Chat.IsChannel() || msg.Chat.IsSuperGroup() || msg.Chat.IsGroup() {
 			detectChannel(bot, msg.Chat)
@@ -325,6 +366,16 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	username := msg.From.UserName
 	text := strings.TrimSpace(msg.Text)
 
+	// Anti-Flood Protection
+	if security.IsFlood(userID) {
+		log.Printf("⚠️ [XAVFSIZLIK: FLOOD CHEKLANDI] Foydalanuvchi ID: %d", userID)
+		warnMsg := "⚠️ <b>Iltimos, shoshilmang!</b> Juda ko'p so'rov yuborildi (Anti-Flood himoyasi)."
+		reply := tgbotapi.NewMessage(chatID, warnMsg)
+		reply.ParseMode = tgbotapi.ModeHTML
+		_, _ = bot.Send(reply)
+		return
+	}
+
 	// Auto-detect channel if forwarded
 	if msg.ForwardFromChat != nil {
 		chID := fmt.Sprintf("%d", msg.ForwardFromChat.ID)
@@ -335,7 +386,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			"✅ <b>Taklif kanali muvaffaqiyatli ulandi!</b> 🚀\n\n"+
 				"📢 <b>Kanal:</b> %s\n"+
 				"🆔 <b>Kanal ID:</b> <code>%s</code>\n\n"+
-				"Endi barcha buyurtmalar avtomatik shu kanalga tashlanadi!",
+				"Endi barcha buyurtmalar FAQAT shu kanalga tashlanadi!",
 			html.EscapeString(msg.ForwardFromChat.Title),
 			chID,
 		)
@@ -343,11 +394,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		reply.ParseMode = tgbotapi.ModeHTML
 		_, _ = bot.Send(reply)
 		return
-	}
-
-	// Auto-detect Admin
-	if strings.EqualFold(username, strings.TrimPrefix(developerTG, "@")) || adminChatID == 0 {
-		setAdminChatID(chatID)
 	}
 
 	state := getOrCreateState(userID, username)
@@ -366,7 +412,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		curCh := channelID
 		cfgMu.RUnlock()
 		if curCh != "" {
-			resp := fmt.Sprintf("✅ <b>Hozirda ulangan kanal ID:</b> <code>%s</code>\n\nBarcha yangi buyurtmalar ushbu kanalga yuborilmoqda.", curCh)
+			resp := fmt.Sprintf("✅ <b>Hozirda ulangan kanal ID:</b> <code>%s</code>\n\nBarcha yangi buyurtmalar FAQAT ushbu kanalga yuborilmoqda.", curCh)
 			reply := tgbotapi.NewMessage(chatID, resp)
 			reply.ParseMode = tgbotapi.ModeHTML
 			_, _ = bot.Send(reply)
@@ -431,12 +477,17 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			_, _ = bot.Send(reply)
 			return
 		}
+
+		// Security: Truncate input length
+		if len(text) > 100 {
+			text = text[:100]
+		}
+
 		state.Name = text
 		state.Step = StepWaitingService
 		showServiceOptions(bot, chatID, state.Language)
 
 	case StepWaitingService:
-		// User might click reply button or type text
 		clean := strings.ToLower(text)
 		if strings.Contains(clean, "frontend") {
 			state.ServiceType = ServiceFrontend
@@ -455,14 +506,12 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		}
 
 	case StepWaitingTech:
-		// Check text matching tech options
 		tech := matchTechInput(text, state.ServiceType)
 		if tech != "" {
 			state.Technology = tech
 			state.Step = StepWaitingProject
 			askProjectDetails(bot, chatID, state.Language)
 		} else {
-			// Reshow options for the current service
 			switch state.ServiceType {
 			case ServiceFullstack:
 				showFullstackTechOptions(bot, chatID, state.Language)
@@ -480,19 +529,24 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		}
 
 		if text != "" {
+			// Security: Limit length
+			if len(text) > 2500 {
+				text = text[:2500]
+			}
 			state.ProjectInfo = text
-			// Try extracting phone from text if contact wasn't tapped
 			if phone == "" {
 				phone = extractPhoneNumber(text)
 			}
 		}
 
 		if phone != "" {
+			if len(phone) > 40 {
+				phone = phone[:40]
+			}
 			state.Phone = phone
 		}
 
 		if state.ProjectInfo == "" && phone != "" {
-			// User sent only contact, now ask for text description
 			prompt := "Telefon raqamingiz qabul qilindi! Endi proekt haqida to'liq ma'lumot yozing:"
 			if state.Language == LangEN {
 				prompt = "Phone number received! Now please write full information about your project:"
@@ -509,7 +563,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			return
 		}
 
-		// Order complete!
+		// Finish order
 		finishOrder(bot, chatID, userID, state)
 
 	default:
@@ -745,6 +799,11 @@ func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 
 	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 
+	// Anti-Flood on button clicking
+	if security.IsFlood(userID) {
+		return
+	}
+
 	state := getOrCreateState(userID, cb.From.UserName)
 
 	// 1. Language selection callback
@@ -814,6 +873,31 @@ func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
 }
 
 func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserState) {
+	// Security: Anti-Spam / Phishing filter
+	if isSpamOrPhishing(state.ProjectInfo) || isSpamOrPhishing(state.Name) {
+		log.Printf("🚨 [XAVFSIZLIK: SPAM BLOKLANDI] Foydalanuvchi: %d", userID)
+		errMsg := "⚠️ <b>Xavfsizlik xatosi:</b> Xabaringizda ruxsat berilmagan havolalar yoki belgilar aniqlandi."
+		reply := tgbotapi.NewMessage(chatID, errMsg)
+		reply.ParseMode = tgbotapi.ModeHTML
+		_, _ = bot.Send(reply)
+		clearState(userID)
+		return
+	}
+
+	// Security: Cooldown check (30 seconds between orders)
+	if !security.AllowOrder(userID) {
+		warnMsg := "⏳ <b>Iltimos, kuting:</b> Buyurtmangiz allaqachon qabul qilingan. Yangi buyurtma yuborish uchun 30 soniya kuting."
+		if state.Language == LangEN {
+			warnMsg = "⏳ <b>Please wait:</b> Your order has already been received. Please wait 30 seconds before submitting a new one."
+		} else if state.Language == LangRU {
+			warnMsg = "⏳ <b>Пожалуйста, подождите:</b> Ваш заказ уже принят. Подождите 30 секунд перед отправкой нового."
+		}
+		reply := tgbotapi.NewMessage(chatID, warnMsg)
+		reply.ParseMode = tgbotapi.ModeHTML
+		_, _ = bot.Send(reply)
+		return
+	}
+
 	state.Step = StepChooseLang
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 
@@ -910,7 +994,7 @@ func finishOrder(bot *tgbotapi.BotAPI, chatID int64, userID int64, state *UserSt
 	reply.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 	_, _ = bot.Send(reply)
 
-	// 2. ROUTING: KANALGA VA ADMIN (MEN) GA YUBORISH
+	// 2. ROUTING: FAQAT KANALGA YUBORISH (Shaxsiy hisobga bot tashlamaydi!)
 	sendOrderRouting(bot, state, userID, chatID, nowStr, "Telegram Bot", serviceDisplay, techDisplay, phoneDisplay)
 
 	// 3. Clear session
@@ -953,10 +1037,9 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chat
 
 	cfgMu.RLock()
 	curChan := channelID
-	curAdmin := adminChatID
 	cfgMu.RUnlock()
 
-	// 1. Send to Channel (bot -> kanal)
+	// 1. Send EXCLUSIVELY to Channel (Mijozlar buyurtmasi FAQAT kanalga tushadi!)
 	if curChan != "" {
 		var err error
 		if strings.HasPrefix(curChan, "-") {
@@ -986,22 +1069,10 @@ func sendOrderRouting(bot *tgbotapi.BotAPI, state *UserState, userID int64, chat
 				_, _ = bot.Send(warn)
 			}
 		} else {
-			log.Printf("✅ Buyurtma kanalga yuborildi: %s", curChan)
+			log.Printf("✅ Buyurtma FAQAT kanalga yuborildi: %s", curChan)
 		}
 	} else {
 		log.Println("⚠️ Kanal ID hali ulanmagan. Kanaldan xabar forward qiling.")
-	}
-
-	// 2. Send to Admin personally (kanal -> men)
-	if curAdmin != 0 {
-		adminMsg := tgbotapi.NewMessage(curAdmin, "🔔 <b>Yangi buyurtma (Kanalga ham yuborildi):</b>\n\n"+orderText)
-		adminMsg.ParseMode = tgbotapi.ModeHTML
-		_, err := bot.Send(adminMsg)
-		if err != nil {
-			log.Printf("❌ Adminga yuborishda xatolik: %v", err)
-		} else {
-			log.Println("✅ Buyurtma shaxsan adminga yuborildi")
-		}
 	}
 }
 
@@ -1102,6 +1173,13 @@ func handleWebOrder(bot *tgbotapi.BotAPI, w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Security: Anti-Spam check
+	if isSpamOrPhishing(req.Project) || isSpamOrPhishing(req.Name) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Security error"})
+		return
+	}
+
 	l := LangUZ
 	if req.Language == "en" {
 		l = LangEN
@@ -1181,21 +1259,12 @@ func setChannelID(newChan string) {
 	updateEnv("TELEGRAM_CHANNEL_ID", newChan)
 }
 
-func setAdminChatID(newAdmin int64) {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
-	adminChatID = newAdmin
-	_ = os.Setenv("TELEGRAM_ADMIN_CHAT_ID", fmt.Sprintf("%d", newAdmin))
-	updateEnv("TELEGRAM_ADMIN_CHAT_ID", fmt.Sprintf("%d", newAdmin))
-}
-
 func loadConfig() {
 	loadDotEnv(".env")
 	loadDotEnv("../.env")
 
 	botToken = getEnv("TELEGRAM_BOT_TOKEN", "")
 	channelID = getEnv("TELEGRAM_CHANNEL_ID", "")
-	adminChatID, _ = strconv.ParseInt(getEnv("TELEGRAM_ADMIN_CHAT_ID", "0"), 10, 64)
 	port = getEnv("PORT", "8080")
 	portfolioURL = getEnv("PORTFOLIO_URL", "https://haydarali.uz")
 }
